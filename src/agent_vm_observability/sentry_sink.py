@@ -18,6 +18,10 @@ class CapturedTrace:
     measurements: dict[str, int | float]
 
 
+USAGE_MEASUREMENT_KEYS = ("input_tokens", "output_tokens", "total_tokens", "cost_usd")
+USAGE_SPAN_OP = "gen_ai.responses"
+
+
 class SentrySink:
     def __init__(self, config: RuntimeConfig, dry_run: bool = False) -> None:
         self.config = config
@@ -112,12 +116,16 @@ def _measurement_name(key: str) -> str:
     return key.replace(".", "_").replace("-", "_")
 
 
+def _has_usage_measurements(measurements: dict[str, int | float]) -> bool:
+    return any(key in measurements for key in USAGE_MEASUREMENT_KEYS)
+
+
 def _transaction_op(trace: NormalizedTrace) -> str:
     if trace.tool_name:
         return "gen_ai.execute_tool"
     measurements = trace.all_measurements()
-    if trace.model and any(key in measurements for key in ("input_tokens", "output_tokens", "total_tokens")):
-        return "gen_ai.invoke_agent"
+    if _has_usage_measurements(measurements):
+        return USAGE_SPAN_OP
     return f"agent.{trace.agent}.{trace.kind}"
 
 
@@ -130,6 +138,8 @@ def _gen_ai_attributes(trace: NormalizedTrace, measurements: dict[str, int | flo
     if trace.tool_name:
         data["gen_ai.tool.name"] = trace.tool_name
         data["gen_ai.operation.name"] = "execute_tool"
+    elif _has_usage_measurements(measurements):
+        data["gen_ai.operation.name"] = "responses"
     else:
         data["gen_ai.operation.name"] = trace.kind
 
@@ -155,4 +165,8 @@ def _gen_ai_attributes(trace: NormalizedTrace, measurements: dict[str, int | flo
     total_tokens = int(measurements.get("total_tokens") or 0)
     if total_tokens:
         data["gen_ai.usage.total_tokens"] = total_tokens
+    cost_usd = float(measurements.get("cost_usd") or 0)
+    if cost_usd:
+        data["gen_ai.cost.total_tokens"] = cost_usd
+        data["gen_ai.usage.total_cost"] = cost_usd
     return data
