@@ -11,6 +11,7 @@ def empty_state() -> dict[str, Any]:
         "version": 1,
         "claude_files": {},
         "pi_files": {},
+        "pi_session_files": {},
         "codex_threads_last_updated_ms": 0,
         "codex_logs_last_id": 0,
     }

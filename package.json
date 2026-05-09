@@ -1,0 +1,51 @@
+{
+  "name": "agent-usage-observability",
+  "version": "0.1.0",
+  "description": "Local Sentry observability and usage backfill for Codex, Claude Code, and Pi agents.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "agent-usage-observability": "bin/agent-usage-observability.js",
+    "agent-vm": "bin/agent-usage-observability.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/npm-postinstall.js",
+    "test": "python -m pytest",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "files": [
+    "bin/",
+    "scripts/npm-postinstall.js",
+    "src/**/*.py",
+    "dashboards/**/*.json",
+    "launchd/**/*",
+    "docs/**/*.md",
+    ".env.example",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sahan-penakalapati/coding-agents-sentry-observability.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sahan-penakalapati/coding-agents-sentry-observability/issues"
+  },
+  "homepage": "https://github.com/sahan-penakalapati/coding-agents-sentry-observability#readme",
+  "keywords": [
+    "agents",
+    "ai",
+    "observability",
+    "sentry",
+    "codex",
+    "claude-code",
+    "pi"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

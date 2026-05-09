@@ -16,6 +16,7 @@ CODEX_STATE_DB = HOME / ".codex/state_5.sqlite"
 CLAUDE_PROJECTS_GLOB = str(HOME / ".claude/projects/**/*.jsonl")
 CLAUDE_MEM_DB = HOME / ".claude-mem/claude-mem.db"
 PI_SUGGESTER_GLOB = str(HOME / ".pi/suggester")
+PI_SESSIONS_GLOB = str(HOME / ".pi/agent/sessions/**/*.jsonl")
 
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:
@@ -93,6 +94,7 @@ class RuntimeConfig:
     max_batch: int
     poll_seconds: int
     record_memory: bool
+    pi_sessions_glob: str = ""
 
 
 def get_config() -> RuntimeConfig:
@@ -115,4 +117,5 @@ def get_config() -> RuntimeConfig:
         max_batch=env_int("AGENT_VM_MAX_BATCH", env_int("AGENT_SENTRY_MAX_BATCH", 250)),
         poll_seconds=env_int("AGENT_VM_POLL_SECONDS", env_int("AGENT_SENTRY_POLL_SECONDS", 15)),
         record_memory=env_bool("AGENT_VM_RECORD_MEMORY", True),
+        pi_sessions_glob=os.environ.get("AGENT_VM_PI_SESSION_GLOB") or os.environ.get("AGENT_VM_PI_SESSIONS_GLOB") or PI_SESSIONS_GLOB,
     )

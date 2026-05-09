@@ -204,6 +204,17 @@ class AgentIngestor:
                 continue
             offset = 0 if cutoff_seconds and stat.st_mtime >= cutoff_seconds else stat.st_size
             pi_files[str(path)] = {"offset": offset, "inode": stat.st_ino, "mtime": stat.st_mtime}
+
+        pi_session_files: dict[str, Any] = state.setdefault("pi_session_files", {})
+        for path in self.pi_session_paths():
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            offset = 0 if cutoff_seconds and stat.st_mtime >= cutoff_seconds else stat.st_size
+            entry = {"offset": offset, "inode": stat.st_ino, "mtime": stat.st_mtime}
+            _bootstrap_pi_session_entry(path, entry)
+            pi_session_files[str(path)] = entry
         state["initialized_at"] = int(time.time())
         state["initialization_mode"] = f"backfill-since:{backfill_since.isoformat()}" if backfill_since else "current-watermarks"
 
@@ -213,6 +224,7 @@ class AgentIngestor:
             "codex_threads": self.process_codex_threads(state, max_batch),
             "claude_records": self.process_claude_files(state, max_batch, since=since),
             "pi_records": self.process_pi_files(state, max_batch, since=since),
+            "pi_session_records": self.process_pi_session_files(state, max_batch, since=since),
         }
 
     def emit(self, trace: NormalizedTrace) -> None:
@@ -345,6 +357,24 @@ class AgentIngestor:
                     paths.append(log_path)
         return paths
 
+    def pi_session_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        seen: set[str] = set()
+        for pattern in str(getattr(self.config, "pi_sessions_glob", "") or "").split(os.pathsep):
+            pattern = pattern.strip()
+            if not pattern:
+                continue
+            expanded = str(Path(pattern).expanduser())
+            for match in glob.iglob(expanded, recursive=True):
+                path = Path(match).expanduser()
+                if not path.is_file() or path.suffix != ".jsonl":
+                    continue
+                key = str(path)
+                if key not in seen:
+                    seen.add(key)
+                    paths.append(path)
+        return paths
+
     def process_pi_files(self, state: dict[str, Any], max_batch: int, since: datetime | None = None) -> int:
         files_state: dict[str, Any] = state.setdefault("pi_files", {})
         processed = 0
@@ -397,6 +427,65 @@ class AgentIngestor:
                     self.emit(trace)
                     processed += 1
             entry.update({"offset": offset, "inode": stat.st_ino, "mtime": stat.st_mtime})
+        return processed
+
+    def process_pi_session_files(self, state: dict[str, Any], max_batch: int, since: datetime | None = None) -> int:
+        files_state: dict[str, Any] = state.setdefault("pi_session_files", {})
+        skip_existing = bool(state.get("initialized_at") and not files_state)
+        processed = 0
+        for path in self.pi_session_paths():
+            if processed >= max_batch:
+                break
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            file_key = str(path)
+            entry = files_state.get(file_key)
+            if entry is None:
+                initial_offset = stat.st_size if skip_existing else 0
+                entry = {"offset": initial_offset, "inode": stat.st_ino, "mtime": stat.st_mtime}
+                files_state[file_key] = entry
+            _bootstrap_pi_session_entry(path, entry)
+            offset = int(entry.get("offset", 0) or 0)
+            if offset > stat.st_size:
+                offset = 0
+            if offset == stat.st_size:
+                entry.update({"offset": offset, "inode": stat.st_ino, "mtime": stat.st_mtime})
+                continue
+
+            session_meta = dict(entry.get("session_meta") or {})
+            with path.open("rb") as handle:
+                handle.seek(offset)
+                for raw_line in handle:
+                    if processed >= max_batch:
+                        break
+                    start_offset = offset
+                    offset += len(raw_line)
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    traces = pi_session_record_to_traces(
+                        record,
+                        path,
+                        session_meta,
+                        self.git,
+                        self.config.include_text,
+                        source_event_id=f"pi-session:{file_key}:{start_offset}",
+                    )
+                    record_ts = _pi_session_record_timestamp(record)
+                    if since and record_ts and record_ts < since:
+                        continue
+                    for trace in traces:
+                        trace.extra["jsonl_path"] = file_key
+                        self.emit(trace)
+                    if traces:
+                        processed += 1
+            entry.update({"offset": offset, "inode": stat.st_ino, "mtime": stat.st_mtime, "session_meta": session_meta})
         return processed
 
 
@@ -695,6 +784,321 @@ def pi_event_to_trace(
     )
     apply_cost_estimate(trace)
     return trace
+
+
+def pi_session_record_to_traces(
+    record: dict[str, Any],
+    path: Path,
+    session_meta: dict[str, Any],
+    git: GitMetadataCache,
+    include_text: bool,
+    source_event_id: str | None = None,
+) -> list[NormalizedTrace]:
+    _update_pi_session_meta(record, path, session_meta)
+    record_type = str(record.get("type") or "unknown").replace(" ", "_")
+    timestamp = _pi_session_record_timestamp(record)
+    session_id = str(session_meta.get("session_id") or _pi_session_id_from_path(path) or short_hash(str(path)) or "pi")
+    cwd = session_meta.get("cwd") if isinstance(session_meta.get("cwd"), str) else None
+    git_meta = git.for_cwd(cwd)
+    base = {
+        "agent": "pi",
+        "timestamp": timestamp,
+        "session_id": session_id,
+        "project": infer_project(cwd),
+        "cwd": cwd,
+        "repo": git_meta["repo"],
+        "git_branch": git_meta["git_branch"],
+        "git_sha": git_meta["git_sha"],
+        "provider": _normalize_pi_provider(session_meta.get("provider")),
+        "agent_version": session_meta.get("version") if isinstance(session_meta.get("version"), str) else None,
+        "command_kind": "pi_session",
+    }
+    traces: list[NormalizedTrace] = []
+
+    if record_type == "session":
+        traces.append(
+            NormalizedTrace(
+                **base,
+                kind="session_start",
+                source_event_id=f"{source_event_id}:session",
+                model=_clean_pi_model(session_meta.get("model")),
+                success=True,
+                tags={"usage_rollup": "session"},
+                extra={"session": _summarize_pi_session_record(record, include_text)},
+            )
+        )
+        return traces
+
+    if record_type == "model_change":
+        traces.append(
+            NormalizedTrace(
+                **base,
+                kind="model_change",
+                source_event_id=f"{source_event_id}:model",
+                model=_clean_pi_model(session_meta.get("model")),
+                success=True,
+                extra={"model_change": _summarize_pi_session_record(record, include_text)},
+            )
+        )
+        return traces
+
+    if record_type != "message":
+        return traces
+
+    message = record.get("message") if isinstance(record.get("message"), dict) else {}
+    role = str(message.get("role") or "unknown")
+    model = _clean_pi_model(message.get("model") or session_meta.get("model"))
+    provider = _normalize_pi_provider(message.get("provider") or session_meta.get("provider"))
+    if provider:
+        base["provider"] = provider
+    content = message.get("content")
+    summary = _pi_session_content_summary(content, include_text)
+    tags = {"role": role, "record_type": record_type, "stop_reason": message.get("stopReason")}
+
+    if role == "assistant":
+        usage = _pi_session_usage(message.get("usage"))
+        trace = NormalizedTrace(
+            **base,
+            kind="assistant_turn",
+            source_event_id=f"{source_event_id}:assistant",
+            turn_id=str(record.get("id") or ""),
+            model=model,
+            success=True,
+            token_usage=usage["token_usage"],
+            measurements=usage["measurements"],
+            tags=tags,
+            extra={"message": _summarize_pi_session_record(record, include_text), "content_summary": summary},
+        )
+        apply_cost_estimate(trace)
+        traces.append(trace)
+        for tool in summary.get("tool_calls", []):
+            traces.append(
+                NormalizedTrace(
+                    **base,
+                    kind="tool_call",
+                    source_event_id=f"{source_event_id}:tool:{tool.get('id') or tool.get('name')}",
+                    turn_id=str(record.get("id") or ""),
+                    model=model,
+                    tool_name=tool.get("name"),
+                    tool_kind="pi_tool",
+                    success=True,
+                    tags={**tags, "tool_id": tool.get("id")},
+                    extra={"tool": tool},
+                )
+            )
+        return traces
+
+    if role == "toolResult":
+        is_error = bool(message.get("isError"))
+        traces.append(
+            NormalizedTrace(
+                **base,
+                kind="tool_result",
+                level="error" if is_error else "info",
+                source_event_id=f"{source_event_id}:tool-result",
+                turn_id=str(record.get("id") or ""),
+                model=model,
+                tool_name=message.get("toolName") if isinstance(message.get("toolName"), str) else None,
+                tool_kind="pi_tool",
+                success=not is_error,
+                tags={**tags, "tool_call_id": message.get("toolCallId")},
+                extra={"tool_result": _summarize_pi_session_record(record, include_text), "content_summary": summary},
+            )
+        )
+    return traces
+
+
+def _bootstrap_pi_session_entry(path: Path, entry: dict[str, Any]) -> None:
+    if entry.get("session_meta"):
+        return
+    meta: dict[str, Any] = {}
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for _, line in zip(range(25), handle):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                _update_pi_session_meta(record, path, meta)
+                if meta.get("session_id") and meta.get("cwd") and meta.get("model"):
+                    break
+    except OSError:
+        pass
+    if not meta:
+        cwd = _pi_session_cwd_from_path(path)
+        if cwd:
+            meta["cwd"] = cwd
+        session_id = _pi_session_id_from_path(path)
+        if session_id:
+            meta["session_id"] = session_id
+    entry["session_meta"] = meta
+
+
+def _update_pi_session_meta(record: dict[str, Any], path: Path, session_meta: dict[str, Any]) -> None:
+    record_type = record.get("type")
+    if record_type == "session":
+        if record.get("id"):
+            session_meta["session_id"] = str(record.get("id"))
+        if isinstance(record.get("cwd"), str):
+            session_meta["cwd"] = record.get("cwd")
+        if isinstance(record.get("version"), str):
+            session_meta["version"] = record.get("version")
+    elif record_type == "model_change":
+        if isinstance(record.get("provider"), str):
+            session_meta["provider"] = record.get("provider")
+        if isinstance(record.get("modelId"), str):
+            session_meta["model"] = record.get("modelId")
+    elif record_type == "message" and isinstance(record.get("message"), dict):
+        message = record["message"]
+        if isinstance(message.get("provider"), str):
+            session_meta["provider"] = message.get("provider")
+        if isinstance(message.get("model"), str):
+            session_meta["model"] = message.get("model")
+    session_meta.setdefault("session_id", _pi_session_id_from_path(path))
+    cwd = _pi_session_cwd_from_path(path)
+    if cwd:
+        session_meta.setdefault("cwd", cwd)
+
+
+def _pi_session_record_timestamp(record: dict[str, Any]) -> datetime | None:
+    timestamp = parse_timestamp(record.get("timestamp"))
+    if timestamp:
+        return timestamp
+    message = record.get("message") if isinstance(record.get("message"), dict) else {}
+    return parse_timestamp(message.get("timestamp"))
+
+
+def _pi_session_usage(value: Any) -> dict[str, dict[str, int | float]]:
+    usage = value if isinstance(value, dict) else {}
+    token_usage: dict[str, int | float] = {}
+    measurements: dict[str, int | float] = {}
+    for source_key, target_key in (
+        ("input", "input_tokens"),
+        ("output", "output_tokens"),
+        ("cacheRead", "cache_read_input_tokens"),
+        ("cacheWrite", "cache_creation_input_tokens"),
+    ):
+        number = _int_or_none(usage.get(source_key))
+        if number is not None:
+            token_usage[target_key] = number
+    total_tokens = _int_or_none(usage.get("totalTokens"))
+    if total_tokens is not None:
+        measurements["total_tokens"] = total_tokens
+    cost = usage.get("cost") if isinstance(usage.get("cost"), dict) else {}
+    for source_key, target_key in (
+        ("input", "input_cost_usd"),
+        ("output", "output_cost_usd"),
+        ("cacheRead", "cache_read_cost_usd"),
+        ("cacheWrite", "cache_write_cost_usd"),
+        ("total", "cost_usd"),
+    ):
+        number = _float_or_none(cost.get(source_key))
+        if number is not None:
+            measurements[target_key] = number
+    return {"token_usage": token_usage, "measurements": measurements}
+
+
+def _pi_session_content_summary(content: Any, include_text: bool) -> dict[str, Any]:
+    summary: dict[str, Any] = {"content_type": type(content).__name__, "text_len": 0, "content_types": [], "tool_calls": []}
+    text_chunks: list[str] = []
+    if isinstance(content, str):
+        summary["text_len"] = len(content)
+        if include_text:
+            summary["text"] = redact_text(content)
+        else:
+            summary["text_hash"] = short_hash(content)
+        return summary
+    if not isinstance(content, list):
+        return summary
+    content_types: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type", "unknown"))
+        content_types.append(block_type)
+        if block_type == "text":
+            text = str(block.get("text", ""))
+            summary["text_len"] = int(summary["text_len"]) + len(text)
+            text_chunks.append(text)
+        elif block_type == "thinking":
+            thinking = str(block.get("thinking", ""))
+            summary["thinking_len"] = int(summary.get("thinking_len", 0)) + len(thinking)
+        elif block_type == "toolCall":
+            arguments = block.get("arguments")
+            tool: dict[str, Any] = {
+                "id": block.get("id"),
+                "name": block.get("name"),
+                "argument_keys": sorted(arguments.keys()) if isinstance(arguments, dict) else [],
+            }
+            if include_text:
+                tool["arguments"] = scrub(arguments)
+            tool_calls.append(tool)
+    summary["content_types"] = sorted(set(content_types))
+    summary["tool_calls"] = [tool for tool in tool_calls if tool.get("name")]
+    if include_text and text_chunks:
+        summary["text"] = redact_text("\n".join(text_chunks))
+    elif text_chunks:
+        summary["text_hash"] = short_hash("\n".join(text_chunks))
+    return summary
+
+
+def _summarize_pi_session_record(record: dict[str, Any], include_text: bool) -> dict[str, Any]:
+    result = {key: value for key, value in record.items() if key not in {"message"}}
+    message = record.get("message") if isinstance(record.get("message"), dict) else None
+    if message:
+        result["message"] = {key: value for key, value in message.items() if key not in {"content", "details"}}
+        result["message"]["content_summary"] = _pi_session_content_summary(message.get("content"), include_text)
+        if isinstance(message.get("details"), dict):
+            details = message["details"]
+            result["message"]["details_summary"] = {
+                "mode": details.get("mode"),
+                "result_count": len(details.get("results", [])) if isinstance(details.get("results"), list) else None,
+                "artifact_count": len(details.get("artifacts", {}).get("files", [])) if isinstance(details.get("artifacts"), dict) and isinstance(details.get("artifacts", {}).get("files"), list) else None,
+            }
+    return scrub(result) if include_text else result
+
+
+def _pi_session_id_from_path(path: Path) -> str | None:
+    stem = path.stem
+    if "_" in stem:
+        candidate = stem.rsplit("_", 1)[-1]
+        if candidate and candidate != "session":
+            return candidate
+    for parent in path.parents:
+        if "_" in parent.name:
+            candidate = parent.name.rsplit("_", 1)[-1]
+            if candidate:
+                return candidate
+    return None
+
+
+def _pi_session_cwd_from_path(path: Path) -> str | None:
+    for parent in path.parents:
+        if parent.parent.name == "sessions" and parent.name.startswith("--") and parent.name.endswith("--"):
+            encoded = parent.name[2:-2]
+            if encoded.startswith("Users-"):
+                first, second, *rest = encoded.split("-")
+                if first and second and rest:
+                    return "/" + "/".join([first, second, "-".join(rest)])
+    return None
+
+
+def _clean_pi_model(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return value.split(":", 1)[0]
+
+
+def _normalize_pi_provider(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.strip().lower()
+    if normalized.startswith("openai"):
+        return "openai"
+    if normalized.startswith("anthropic"):
+        return "anthropic"
+    return normalized
 
 
 def _pi_token_usage(meta: dict[str, Any]) -> dict[str, int | float]:

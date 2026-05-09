@@ -20,8 +20,10 @@ Later values in the process environment override values loaded from files.
 | `AGENT_VM_CODEX_STATE_DB` | `~/.codex/state_5.sqlite` | Codex thread metadata database |
 | `AGENT_VM_CLAUDE_GLOB` | `~/.claude/projects/**/*.jsonl` | Claude Code session JSONL glob |
 | `AGENT_VM_PI_SUGGESTER_GLOB` | `~/.pi/suggester` | Pi suggester root, `events.ndjson`, or glob |
+| `AGENT_VM_PI_SESSION_GLOB` | `~/.pi/agent/sessions/**/*.jsonl` | Pi session JSONL glob |
 
 `AGENT_VM_PI_SUGGESTER_GLOB` may point to a root such as `~/.pi/suggester`, a project-local root such as `/path/to/project/.pi/suggester`, or a direct `events.ndjson` file.
+`AGENT_VM_PI_SESSION_GLOB` should point at Pi's session JSONL files; use a path-list separated by `:` to watch multiple roots.
 
 ## Sentry
 

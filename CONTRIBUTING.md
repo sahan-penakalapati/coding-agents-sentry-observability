@@ -31,5 +31,6 @@ python -m pytest
 ```bash
 python -m pytest
 python -m build --sdist --wheel
+npm pack --dry-run
 agent-vm backfill --minutes 5 --dry-run
 ```

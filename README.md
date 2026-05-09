@@ -8,11 +8,22 @@ Local observability and shared memory for coding agents.
 
 - Codex: OTel logs from `~/.codex/logs_2.sqlite` and thread metadata from `~/.codex/state_5.sqlite`
 - Claude Code: JSONL records from `~/.claude/projects/**/*.jsonl`
-- Pi: suggester events from `~/.pi/suggester/logs/events.ndjson`
+- Pi: session JSONL records from `~/.pi/agent/sessions/**/*.jsonl` and suggester events from `~/.pi/suggester/logs/events.ndjson`
 
 Raw message text is disabled by default. The bridge records lengths, hashes, metadata, token counters, tool names, timing, and cost estimates. Sentry path tags are hashed by default.
 
 ## Install
+
+From npm:
+
+```bash
+npm install -g agent-usage-observability
+agent-usage-observability status
+```
+
+The npm package creates a private Python runtime during install. It also exposes the shorter `agent-vm` command. Set `AGENT_USAGE_OBSERVABILITY_SKIP_POSTINSTALL=1` if you need to manage Python dependencies yourself.
+
+From source:
 
 ```bash
 git clone <your-fork-or-repo-url> coding-agents-mem
@@ -88,6 +99,7 @@ Useful variables:
 | `AGENT_VM_CODEX_STATE_DB` | `~/.codex/state_5.sqlite` | Codex thread source |
 | `AGENT_VM_CLAUDE_GLOB` | `~/.claude/projects/**/*.jsonl` | Claude Code JSONL source |
 | `AGENT_VM_PI_SUGGESTER_GLOB` | `~/.pi/suggester` | Pi suggester root or glob |
+| `AGENT_VM_PI_SESSION_GLOB` | `~/.pi/agent/sessions/**/*.jsonl` | Pi session JSONL glob |
 | `AGENT_SENTRY_INCLUDE_TEXT` | `0` | Opt in to redacted raw text export |
 | `AGENT_VM_RECORD_MEMORY` | `1` | Write normalized traces to SQLite |
 

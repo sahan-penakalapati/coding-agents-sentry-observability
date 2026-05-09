@@ -1,6 +1,10 @@
 .DS_Store
 .env
 .venv/
+.venv-npm/
+node_modules/
+npm-debug.log*
+*.tgz
 __pycache__/
 *.py[cod]
 *.egg-info/

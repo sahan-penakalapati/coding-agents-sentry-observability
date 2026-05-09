@@ -2,6 +2,7 @@ from pathlib import Path
 
 from agent_vm_observability.config import RuntimeConfig
 from agent_vm_observability.sentry_dashboards import SentryDashboardClient, dashboard_specs
+from agent_vm_observability.sentry_sink import USAGE_SCHEMA
 
 
 def make_config() -> RuntimeConfig:
@@ -24,6 +25,7 @@ def make_config() -> RuntimeConfig:
         max_batch=250,
         poll_seconds=15,
         record_memory=True,
+        pi_sessions_glob="",
     )
 
 
@@ -61,16 +63,24 @@ def test_dashboard_payload_preserves_chart_layout_and_uses_one_hour_period() -> 
     assert payload["period"] == "1h"
     assert payload["projects"] == [123]
     assert len(payload["widgets"]) >= 12
+    usage_query = f"is_transaction:true usage_schema:{USAGE_SCHEMA} usage_canonical:true usage_rollup:event span.op:gen_ai.responses"
+    session_query = f"is_transaction:true usage_schema:{USAGE_SCHEMA} usage_canonical:true usage_rollup:session span.op:gen_ai.invoke_agent"
     duration = next(widget for widget in payload["widgets"] if widget["title"] == "Duration")
     assert duration["displayType"] == "line"
     assert duration["layout"] == {"x": 4, "y": 2, "w": 2, "h": 3, "minH": 2}
-    assert duration["queries"][0]["conditions"] == "is_transaction:true"
-    assert duration["queries"][0]["aggregates"] == ["avg(transaction.duration)", "p95(transaction.duration)"]
+    assert duration["queries"][0]["conditions"] == usage_query
+    assert duration["queries"][0]["aggregates"] == ["avg(span.duration)", "p95(span.duration)"]
+    active_sessions = next(widget for widget in payload["widgets"] if widget["title"] == "Active Sessions")
+    assert active_sessions["queries"][0]["conditions"] == f"{session_query} session_id:*"
     by_model = next(widget for widget in payload["widgets"] if widget["title"] == "LLM Calls by Model")
     assert by_model["displayType"] == "bar"
     assert by_model["limit"] == 10
+    assert by_model["queries"][0]["conditions"] == f"{usage_query} usage_model:*"
+    assert by_model["queries"][0]["fields"] == ["count()", "usage_model"]
     harnesses = next(widget for widget in payload["widgets"] if widget["title"] == "Coding Harness Distribution")
     assert harnesses["displayType"] == "bar"
     assert harnesses["limit"] == 10
-    assert harnesses["queries"][0]["conditions"] == "is_transaction:true agent:*"
+    assert harnesses["queries"][0]["conditions"] == f"{usage_query} agent:*"
     assert harnesses["queries"][0]["fields"] == ["count()", "agent"]
+    high_cost = next(widget for widget in payload["widgets"] if widget["title"] == "High-cost Traces")
+    assert high_cost["queries"][0]["orderby"] == "-gen_ai.usage.total_cost"

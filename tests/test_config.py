@@ -14,6 +14,7 @@ def test_config_defaults_are_project_neutral(monkeypatch) -> None:
     assert config.sentry_org == ""
     assert config.sentry_project == "agent-vm-usage"
     assert config.pi_suggester_glob.endswith(".pi/suggester")
+    assert config.pi_sessions_glob.endswith(".pi/agent/sessions/**/*.jsonl")
 
 
 def test_load_env_files_preserves_shell_env_and_prefers_new_config(monkeypatch, tmp_path) -> None:

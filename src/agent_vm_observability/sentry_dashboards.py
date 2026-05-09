@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import RuntimeConfig
+from .sentry_sink import USAGE_SCHEMA
+
+
+_USAGE_QUERY = f"is_transaction:true usage_schema:{USAGE_SCHEMA} usage_canonical:true usage_rollup:event span.op:gen_ai.responses"
+_SESSION_QUERY = f"is_transaction:true usage_schema:{USAGE_SCHEMA} usage_canonical:true usage_rollup:session span.op:gen_ai.invoke_agent"
 
 
 def dashboard_specs() -> list[dict[str, Any]]:
@@ -16,38 +21,38 @@ def dashboard_specs() -> list[dict[str, Any]]:
             "title": "Agent VM Usage Overview",
             "period": "1h",
             "widgets": [
-                _big_number("Active Sessions", "count_unique(session_id)", "is_transaction:true session_id:*", layout=_layout(0, 0, 1, 2)),
-                _big_number("LLM Call Count", "count()", "is_transaction:true agent_model:*", layout=_layout(1, 0, 1, 2)),
-                _big_number("Total Tokens", "sum(measurements.total_tokens)", "is_transaction:true", layout=_layout(2, 0, 2, 2)),
-                _big_number("Estimated Cost", "sum(measurements.cost_usd)", "is_transaction:true", layout=_layout(4, 0, 2, 2)),
+                _big_number("Active Sessions", "count_unique(session_id)", f"{_SESSION_QUERY} session_id:*", layout=_layout(0, 0, 1, 2)),
+                _big_number("LLM Call Count", "count()", _USAGE_QUERY, layout=_layout(1, 0, 1, 2)),
+                _big_number("Total Tokens", "sum(gen_ai.usage.total_tokens)", f"{_USAGE_QUERY} gen_ai.usage.total_tokens:>0", layout=_layout(2, 0, 2, 2)),
+                _big_number("Estimated Cost", "sum(gen_ai.usage.total_cost)", f"{_USAGE_QUERY} gen_ai.usage.total_cost:>0", layout=_layout(4, 0, 2, 2)),
                 _line(
                     "Agent Runs",
                     ["count_unique(session_id)"],
-                    "is_transaction:true session_id:*",
+                    f"{_SESSION_QUERY} session_id:*",
                     layout=_layout(0, 2, 2, 3),
                 ),
                 _line(
                     "LLM Calls",
                     ["count()"],
-                    "is_transaction:true agent_model:*",
+                    _USAGE_QUERY,
                     layout=_layout(2, 2, 2, 3),
                 ),
                 _line(
                     "Duration",
-                    ["avg(transaction.duration)", "p95(transaction.duration)"],
-                    "is_transaction:true",
+                    ["avg(span.duration)", "p95(span.duration)"],
+                    _USAGE_QUERY,
                     layout=_layout(4, 2, 2, 3),
                 ),
                 _bar(
                     "LLM Calls by Model",
-                    ["count()", "agent_model"],
-                    "is_transaction:true agent_model:*",
+                    ["count()", "usage_model"],
+                    f"{_USAGE_QUERY} usage_model:*",
                     layout=_layout(0, 5, 2, 4),
                 ),
                 _line(
                     "Tokens Used",
-                    ["sum(measurements.total_tokens)", "agent_model"],
-                    "is_transaction:true agent_model:*",
+                    ["sum(gen_ai.usage.total_tokens)", "usage_model"],
+                    f"{_USAGE_QUERY} gen_ai.usage.total_tokens:>0 usage_model:*",
                     layout=_layout(2, 5, 2, 4),
                 ),
                 _bar(
@@ -58,32 +63,32 @@ def dashboard_specs() -> list[dict[str, Any]]:
                 ),
                 _line(
                     "Estimated Cost",
-                    ["sum(measurements.cost_usd)", "agent_model"],
-                    "is_transaction:true",
+                    ["sum(gen_ai.usage.total_cost)", "usage_model"],
+                    f"{_USAGE_QUERY} gen_ai.usage.total_cost:>0 usage_model:*",
                     layout=_layout(0, 9, 2, 4),
                 ),
                 _bar(
                     "Coding Harness Distribution",
                     ["count()", "agent"],
-                    "is_transaction:true agent:*",
+                    f"{_USAGE_QUERY} agent:*",
                     layout=_layout(2, 9, 2, 4),
                 ),
                 _table(
                     "Usage by Project",
-                    ["count()", "sum(measurements.total_tokens)", "sum(measurements.cost_usd)", "agent_project"],
-                    "is_transaction:true agent_project:*",
+                    ["count()", "sum(gen_ai.usage.total_tokens)", "sum(gen_ai.usage.total_cost)", "agent_project"],
+                    f"{_USAGE_QUERY} gen_ai.usage.total_cost:>0 agent_project:*",
                     layout=_layout(4, 9, 2, 4),
                 ),
                 _line(
                     "Failures",
                     ["count()"],
-                    "is_transaction:true (success:false OR level:error)",
+                    "success:false OR level:error",
                     layout=_layout(0, 13, 2, 3),
                 ),
                 _table(
                     "High-cost Traces",
-                    ["measurements.cost_usd", "measurements.total_tokens", "transaction.duration", "transaction", "agent", "agent_model", "timestamp"],
-                    "is_transaction:true",
+                    ["gen_ai.usage.total_cost", "gen_ai.usage.total_tokens", "span.duration", "transaction", "agent", "agent_project", "usage_model", "timestamp"],
+                    f"{_USAGE_QUERY} gen_ai.usage.total_cost:>0",
                     layout=_layout(2, 13, 2, 4),
                 ),
                 _table(
@@ -161,12 +166,12 @@ def _query_fields(fields: list[str]) -> dict[str, list[str]]:
 def _default_orderby(query_fields: dict[str, list[str]]) -> str:
     if query_fields["aggregates"]:
         return f"-{query_fields['aggregates'][0]}"
-    if "transaction.duration" in query_fields["columns"]:
-        return "-transaction.duration"
-    if "measurements.cost_usd" in query_fields["columns"]:
-        return "-measurements.cost_usd"
-    if "measurements.total_tokens" in query_fields["columns"]:
-        return "-measurements.total_tokens"
+    if "gen_ai.usage.total_cost" in query_fields["columns"]:
+        return "-gen_ai.usage.total_cost"
+    if "span.duration" in query_fields["columns"]:
+        return "-span.duration"
+    if "gen_ai.usage.total_tokens" in query_fields["columns"]:
+        return "-gen_ai.usage.total_tokens"
     return query_fields["columns"][0] if query_fields["columns"] else "-timestamp"
 
 
