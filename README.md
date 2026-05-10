@@ -17,11 +17,19 @@ Raw message text is disabled by default. The bridge records lengths, hashes, met
 From npm:
 
 ```bash
-npm install -g agent-usage-observability
-agent-usage-observability status
+npm install -g coding-agents-observability
+coding-agents-observability status
 ```
 
-The npm package creates a private Python runtime during install. It also exposes the shorter `agent-vm` command. Set `AGENT_USAGE_OBSERVABILITY_SKIP_POSTINSTALL=1` if you need to manage Python dependencies yourself.
+The npm package creates a private Python runtime during install and starts an interactive Sentry setup wizard when the install is attached to a TTY. It also exposes the shorter `agent-vm` command.
+
+Run the wizard again any time:
+
+```bash
+coding-agents-observability setup
+```
+
+Set `CODING_AGENTS_OBSERVABILITY_SKIP_POSTINSTALL=1` to manage Python dependencies yourself, or `CODING_AGENTS_OBSERVABILITY_SKIP_SETUP=1` to skip only the interactive setup.
 
 From source:
 

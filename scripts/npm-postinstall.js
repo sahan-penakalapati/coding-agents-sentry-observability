@@ -26,8 +26,8 @@ function run(command, args, options = {}) {
 
 function candidatePythons() {
   const candidates = [];
-  if (process.env.AGENT_USAGE_OBSERVABILITY_PYTHON) {
-    candidates.push(process.env.AGENT_USAGE_OBSERVABILITY_PYTHON);
+  if (process.env.CODING_AGENTS_OBSERVABILITY_PYTHON) {
+    candidates.push(process.env.CODING_AGENTS_OBSERVABILITY_PYTHON);
   }
   if (process.env.PYTHON) {
     candidates.push(process.env.PYTHON);
@@ -53,14 +53,18 @@ function venvPython() {
   return path.join(venv, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 }
 
-if (/^(1|true|yes)$/i.test(process.env.AGENT_USAGE_OBSERVABILITY_SKIP_POSTINSTALL || '')) {
-  console.log('agent-usage-observability: skipping Python dependency install.');
+function truthy(value) {
+  return /^(1|true|yes)$/i.test(value || '');
+}
+
+if (truthy(process.env.CODING_AGENTS_OBSERVABILITY_SKIP_POSTINSTALL)) {
+  console.log('coding-agents-observability: skipping Python dependency install.');
   process.exit(0);
 }
 
 const python = findPython();
 if (!python) {
-  console.error('agent-usage-observability requires Python 3.11 or newer.');
+  console.error('coding-agents-observability requires Python 3.11 or newer.');
   console.error('Set PYTHON=/path/to/python and run npm install again.');
   process.exit(1);
 }
@@ -72,9 +76,21 @@ try {
   const py = venvPython();
   run(py, ['-m', 'pip', 'install', '--upgrade', 'pip']);
   run(py, ['-m', 'pip', 'install', '.']);
-  console.log('agent-usage-observability: installed Python runtime into package .venv-npm');
+  console.log('coding-agents-observability: installed Python runtime into package .venv-npm');
 } catch (error) {
-  console.error(`agent-usage-observability postinstall failed: ${error.message}`);
-  console.error('Install Python 3.11+, or set AGENT_USAGE_OBSERVABILITY_SKIP_POSTINSTALL=1 and manage Python dependencies yourself.');
+  console.error(`coding-agents-observability postinstall failed: ${error.message}`);
+  console.error('Install Python 3.11+, or set CODING_AGENTS_OBSERVABILITY_SKIP_POSTINSTALL=1 and manage Python dependencies yourself.');
   process.exit(1);
+}
+
+if (truthy(process.env.CODING_AGENTS_OBSERVABILITY_SKIP_SETUP) || truthy(process.env.CI) || !process.stdin.isTTY) {
+  console.log('coding-agents-observability: run `coding-agents-observability setup` to connect Sentry.');
+  process.exit(0);
+}
+
+try {
+  run(process.execPath, [path.join(root, 'scripts', 'setup-sentry.js')]);
+} catch (error) {
+  console.error(`coding-agents-observability setup failed: ${error.message}`);
+  console.error('You can retry with `coding-agents-observability setup`.');
 }

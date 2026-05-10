@@ -32,5 +32,6 @@ python -m pytest
 python -m pytest
 python -m build --sdist --wheel
 npm pack --dry-run
+CODING_AGENTS_OBSERVABILITY_SKIP_SETUP=1 npm install --ignore-scripts=false --dry-run
 agent-vm backfill --minutes 5 --dry-run
 ```
